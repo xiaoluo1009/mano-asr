@@ -1,6 +1,6 @@
 # mano-asr
 
-`mano-asr` is a local ASR service built around MLX Fun-ASR-Nano. It provides a small FastAPI server for single-audio transcription, optional FSMN VAD segmentation, hotword extraction from personal context, request/session logging, and evaluation/benchmark scripts for Fun-ASR-Nano experiments.
+`mano-asr` is a local ASR service built around MLX Fun-ASR-Nano. It provides a small FastAPI server for single-audio transcription, optional FSMN VAD segmentation, hotword extraction from personal context, and request/session logging.
 
 The current runtime path is intentionally narrow:
 
@@ -18,7 +18,7 @@ The current runtime path is intentionally narrow:
 - Non-WAV uploads are decoded to 16 kHz mono WAV with `ffmpeg` before ASR.
 - Context-aware hotword prompt extraction from `personal_context`.
 - Session records saved under `sessions/YYYY-MM-DD/`, including request metadata, response body, and retained audio artifacts.
-- Local client script, inference scripts, CER evaluation scripts, and end-to-end benchmark scripts.
+- Local client script for service testing.
 
 ## Project Layout
 
@@ -35,12 +35,7 @@ The current runtime path is intentionally narrow:
 ├── utils/
 │   ├── load_utils.py                 # Audio-only numpy/ffmpeg loader
 │   └── hotwords_extractor.py         # Hotword extraction from context text
-├── exp/
-│   ├── infer/                        # One-off inference examples
-│   ├── eval/                         # CER evaluation scripts
-│   └── benchmarks/                   # Speed/accuracy benchmark scripts
-├── scripts/                           # Convenience launch/eval commands
-├── docs/voice-transcribe-api.md      # Historical/upstream API contract notes
+├── scripts/                          # Convenience launch commands
 ├── assets/                           # Sample audio files
 ├── models/                           # Local model directories
 └── sessions/                         # Runtime session logs and copied audio
@@ -70,11 +65,6 @@ Runtime:
   - `tqdm`
   - `huggingface_hub` if you use the `hf download` commands below
 
-Evaluation/benchmark extras:
-
-- `jiwer`
-- `cider` if running the Cider W8A8 experiment scripts
-
 Install example:
 
 ```bash
@@ -85,10 +75,8 @@ source .venv/bin/activate
 pip install -U pip
 pip install \
   mlx mlx-audio numpy fastapi "uvicorn[standard]" python-multipart \
-  requests soundfile scipy safetensors transformers tqdm jiwer huggingface_hub
+  requests soundfile scipy safetensors transformers tqdm huggingface_hub
 ```
-
-If you use Cider scripts, install `cider` in the same environment according to that project's installation instructions.
 
 ## Model Files
 
@@ -320,50 +308,12 @@ print(text)
 
 `AutoModel.generate()` returns a plain `str`, not an `STTOutput` object.
 
-## Evaluation and Benchmarks
-
-CER evaluation scripts expect a dataset directory containing a JSON dataset or a `dataset_info.json` mapping.
-
-Baseline MLX evaluation:
-
-```bash
-python3 exp/eval/fun_asr_nano_mlx.py \
-  --model models/mlx-community/Fun-ASR-Nano-2512-8bit \
-  --dataset_dir /path/to/dataset_dir \
-  --dataset dataset_name \
-  --output_dir outputs/dataset_name_mlx
-```
-
-VAD + ASR evaluation:
-
-```bash
-python3 exp/eval/fsmn_vad_fun_asr_nano_mlx.py \
-  --model models/mlx-community/Fun-ASR-Nano-2512-8bit \
-  --vad_model models/fsmn-vad-mlx \
-  --dataset_dir /path/to/dataset_dir \
-  --dataset dataset_name \
-  --output_dir outputs/dataset_name_vad_mlx
-```
-
-End-to-end benchmark:
-
-```bash
-python3 exp/benchmarks/bench_fun_asr_nano.py \
-  --model models/mlx-community/Fun-ASR-Nano-2512-8bit \
-  --dataset_dir /path/to/benchmark \
-  --manifest SeniorTalk_test/manifest_merged.jsonl \
-  --n_samples 10
-```
-
-Several scripts under `exp/infer/`, `exp/eval/`, and `exp/benchmarks/` contain machine-specific absolute paths from development runs. Treat them as examples and replace model/dataset paths before running.
-
 ## Runtime Notes
 
 - The server uses a single-worker `ThreadPoolExecutor` and an async lock around generation, so requests are processed serially through the model path.
 - `ffmpeg` is required for decoding non-WAV uploads and by the local audio loader.
 - `ffprobe` is used for duration detection when `soundfile` cannot read the upload directly.
 - Session logs are written by default and may include copied audio files. Do not expose `sessions/` publicly.
-- `docs/voice-transcribe-api.md` contains broader API notes from a larger voice subsystem. The current `server.py` implementation only exposes `/`, `/v1/voice/transcribe`, and `/v1/voice/config`.
 
 ## Troubleshooting
 
