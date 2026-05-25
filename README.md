@@ -53,6 +53,7 @@ Runtime:
 - Python packages:
   - `mlx`
   - `mlx-audio`
+  - `cider`
   - `numpy`
   - `fastapi`
   - `uvicorn`
