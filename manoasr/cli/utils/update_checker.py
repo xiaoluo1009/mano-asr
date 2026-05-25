@@ -1,0 +1,173 @@
+# coding=utf-8
+"""更新检查 — 检测 CLI 新版本和模型更新"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Optional
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+
+import click
+
+from .constants import (
+    UPDATE_CACHE_FILE,
+    CHECK_INTERVAL,
+    GITHUB_REPO,
+    HF_REPO_MAP,
+    VERSION,
+)
+from .console import warning, info, divider
+
+_CHECK_TIMEOUT = 3
+
+
+def _load_cache() -> dict:
+    try:
+        return json.loads(UPDATE_CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_cache(data: dict) -> None:
+    try:
+        UPDATE_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        UPDATE_CACHE_FILE.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _should_check(cache: dict) -> bool:
+    last_ts = cache.get("last_check_ts", 0)
+    return (time.time() - last_ts) >= CHECK_INTERVAL
+
+
+def _compare_versions(current: str, latest: str) -> bool:
+    """如果 latest > current 返回 True"""
+    try:
+        cur = tuple(int(x) for x in current.split("."))
+        lat = tuple(int(x) for x in latest.split("."))
+        return lat > cur
+    except (ValueError, AttributeError):
+        return False
+
+
+def _fetch_latest_cli_version() -> Optional[str]:
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+    req = Request(url)
+    req.add_header("Accept", "application/vnd.github.v3+json")
+    req.add_header("User-Agent", f"mano-asr/{VERSION}")
+    try:
+        resp = urlopen(req, timeout=_CHECK_TIMEOUT)
+        data = json.loads(resp.read().decode("utf-8"))
+        tag = data.get("tag_name", "")
+        return tag.lstrip("v") if tag else None
+    except Exception:
+        return None
+
+
+def _fetch_model_sha(repo_id: str) -> Optional[str]:
+    url = f"https://huggingface.co/api/models/{repo_id}"
+    req = Request(url)
+    req.add_header("User-Agent", f"mano-asr/{VERSION}")
+    try:
+        resp = urlopen(req, timeout=_CHECK_TIMEOUT)
+        data = json.loads(resp.read().decode("utf-8"))
+        return data.get("sha")
+    except Exception:
+        return None
+
+
+def _get_installed_model_names() -> list[str]:
+    from .download import find_model_in_dirs
+
+    installed = []
+    for model_name in HF_REPO_MAP:
+        is_vad = "vad" in model_name.lower() or "fsmn" in model_name.lower()
+        if find_model_in_dirs(model_name, is_vad=is_vad):
+            installed.append(model_name)
+    return installed
+
+
+def record_model_sha(model_name: str, repo_id: str) -> None:
+    """下载模型后调用，记录当前 SHA 作为基线"""
+    try:
+        sha = _fetch_model_sha(repo_id)
+        if not sha:
+            return
+        cache = _load_cache()
+        models = cache.setdefault("models", {})
+        models[model_name] = {"repo": repo_id, "known_sha": sha}
+        _save_cache(cache)
+    except Exception:
+        pass
+
+
+def check_and_notify() -> None:
+    """检查更新并输出提醒（静默失败）"""
+    try:
+        _do_check_and_notify()
+    except Exception:
+        pass
+
+
+def _do_check_and_notify() -> None:
+    cache = _load_cache()
+
+    needs_remote = _should_check(cache)
+
+    if needs_remote:
+        latest_ver = _fetch_latest_cli_version()
+        if latest_ver:
+            cache["cli"] = {
+                "latest_version": latest_ver,
+                "current_version": VERSION,
+            }
+
+        installed = _get_installed_model_names()
+        models_cache = cache.setdefault("models", {})
+        for model_name in installed:
+            repo_id = HF_REPO_MAP.get(model_name)
+            if not repo_id:
+                continue
+            remote_sha = _fetch_model_sha(repo_id)
+            if remote_sha:
+                entry = models_cache.setdefault(
+                    model_name, {"repo": repo_id, "known_sha": remote_sha}
+                )
+                entry["remote_sha"] = remote_sha
+
+        cache["last_check_ts"] = time.time()
+        _save_cache(cache)
+
+    messages: list[str] = []
+
+    cli_info = cache.get("cli", {})
+    latest = cli_info.get("latest_version")
+    if latest and _compare_versions(VERSION, latest):
+        messages.append(warning(f"新版本可用: mano-asr {latest} (当前: {VERSION})"))
+        messages.append(info("更新: brew upgrade mano-asr"))
+
+    models_cache = cache.get("models", {})
+    updated_models = []
+    for model_name, entry in models_cache.items():
+        known = entry.get("known_sha")
+        remote = entry.get("remote_sha")
+        if known and remote and known != remote:
+            updated_models.append(model_name)
+
+    if updated_models:
+        names = ", ".join(updated_models)
+        messages.append(warning(f"模型更新可用: {names}"))
+        messages.append(info("重新下载模型: mano-asr stop && mano-asr start"))
+
+    if messages:
+        click.echo(f"\n  {divider()}")
+        for msg in messages:
+            click.echo(msg)
+        click.echo(f"  {divider()}")
